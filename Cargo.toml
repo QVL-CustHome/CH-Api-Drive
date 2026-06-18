@@ -1,0 +1,31 @@
+[package]
+name = "ch-api-drive"
+version = "0.1.0"
+edition = "2024"
+description = "Microservice Drive CustHome (fichiers + galerie)"
+
+[dependencies]
+axum = { version = "0.8", features = ["multipart"] }
+tokio = { version = "1", features = ["full"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "migrate", "macros"] }
+jsonwebtoken = "9"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+figment = { version = "0.10", features = ["toml", "env"] }
+dotenvy = "0.15"
+thiserror = "2"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", default-features = false, features = ["serde", "clock"] }
+tower-http = { version = "0.6", features = ["trace"] }
+tokio-util = { version = "0.7", features = ["io"] }
+sha2 = "0.10"
+mime_guess = "2"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp"] }
+kamadak-exif = "0.5"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"

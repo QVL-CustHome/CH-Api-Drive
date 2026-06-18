@@ -1,0 +1,10 @@
+[server]
+port = 8182
+log_level = "INFO"
+
+[storage]
+root = "./Drive"
+default_quota_bytes = 16106127360
+
+[token]
+cookie_name = "ch_token"
