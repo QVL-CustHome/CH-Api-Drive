@@ -463,17 +463,26 @@ pub async fn purge_node(
         .await
         .map_err(AppError::from_db)?;
 
+    release_quota(&mut tx, owner_id, freed).await?;
+
+    tx.commit().await.map_err(AppError::from_db)?;
+    Ok((blobs, freed))
+}
+
+async fn release_quota(
+    tx: &mut sqlx::Transaction<'_, Postgres>,
+    owner_id: &str,
+    freed: i64,
+) -> Result<(), AppError> {
     sqlx::query(
         "UPDATE drive_users SET used_bytes = GREATEST(used_bytes - $2, 0) WHERE user_id = $1",
     )
     .bind(owner_id)
     .bind(freed)
-    .execute(&mut *tx)
+    .execute(&mut **tx)
     .await
     .map_err(AppError::from_db)?;
-
-    tx.commit().await.map_err(AppError::from_db)?;
-    Ok((blobs, freed))
+    Ok(())
 }
 
 pub async fn purge_trash(pool: &Db, owner_id: &str) -> Result<(Vec<PurgedBlob>, i64), AppError> {
@@ -503,14 +512,7 @@ pub async fn purge_trash(pool: &Db, owner_id: &str) -> Result<(Vec<PurgedBlob>, 
         .await
         .map_err(AppError::from_db)?;
 
-    sqlx::query(
-        "UPDATE drive_users SET used_bytes = GREATEST(used_bytes - $2, 0) WHERE user_id = $1",
-    )
-    .bind(owner_id)
-    .bind(freed)
-    .execute(&mut *tx)
-    .await
-    .map_err(AppError::from_db)?;
+    release_quota(&mut tx, owner_id, freed).await?;
 
     tx.commit().await.map_err(AppError::from_db)?;
     Ok((blobs, freed))
