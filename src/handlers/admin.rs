@@ -31,7 +31,8 @@ async fn resolve_identities(state: &AppState, ids: &[String]) -> HashMap<String,
         return HashMap::new();
     }
     let url = format!("{}/internal/users/resolve", state.auth_internal_url);
-    let result = reqwest::Client::new()
+    let result = state
+        .http_client
         .post(&url)
         .header("x-internal-secret", &state.internal_secret)
         .json(&serde_json::json!({ "ids": ids }))
