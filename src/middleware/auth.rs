@@ -1,10 +1,10 @@
 use crate::error::AppError;
+use crate::services::jwt::Claims;
 use crate::services::storage::is_object_id;
 use crate::state::AppState;
 use axum::extract::FromRequestParts;
 use axum::http::header;
 use axum::http::request::Parts;
-use ch_auth_jwt::{Claims, extract_token};
 
 pub struct DriveUser(pub Claims);
 
@@ -46,7 +46,8 @@ impl FromRequestParts<AppState> for DriveAdmin {
 fn authenticate(parts: &Parts, state: &AppState) -> Result<Claims, AppError> {
     let authorization = header_value(parts, header::AUTHORIZATION);
     let cookie = header_value(parts, header::COOKIE);
-    let token = extract_token(authorization, cookie, &state.cookie_name).ok_or(AppError::InvalidToken)?;
+    let token =
+        extract_token(authorization, cookie, &state.cookie_name).ok_or(AppError::InvalidToken)?;
     let claims = state.jwt.decode(&token).map_err(|_| AppError::InvalidToken)?;
     if !is_object_id(&claims.sub) {
         return Err(AppError::InvalidToken);
@@ -56,4 +57,28 @@ fn authenticate(parts: &Parts, state: &AppState) -> Result<Claims, AppError> {
 
 fn header_value(parts: &Parts, name: header::HeaderName) -> Option<&str> {
     parts.headers.get(name)?.to_str().ok()
+}
+
+fn extract_token(
+    authorization_header: Option<&str>,
+    cookie_header: Option<&str>,
+    cookie_name: &str,
+) -> Option<String> {
+    if let Some(token) = authorization_header.and_then(token_from_bearer) {
+        return Some(token);
+    }
+    cookie_header.and_then(|cookies| token_from_cookie(cookies, cookie_name))
+}
+
+fn token_from_bearer(header_value: &str) -> Option<String> {
+    let token = header_value.strip_prefix("Bearer ")?.trim();
+    (!token.is_empty()).then(|| token.to_string())
+}
+
+fn token_from_cookie(cookie_header: &str, cookie_name: &str) -> Option<String> {
+    cookie_header.split(';').find_map(|pair| {
+        let (name, value) = pair.trim().split_once('=')?;
+        let value = value.trim();
+        (name == cookie_name && !value.is_empty()).then(|| value.to_string())
+    })
 }

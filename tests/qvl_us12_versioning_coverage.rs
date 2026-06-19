@@ -3,7 +3,7 @@ use axum::http::{Request, StatusCode};
 use ch_api_drive::routes::{API_VERSION_PREFIX, router};
 use ch_api_drive::services::storage::FsStorage;
 use ch_api_drive::state::AppState;
-use ch_auth_jwt::JwtCodec;
+use ch_api_drive::services::jwt::JwtService;
 use sqlx::postgres::PgPoolOptions;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -15,7 +15,7 @@ fn test_state() -> AppState {
         .expect("pool paresseux");
     AppState {
         db,
-        jwt: Arc::new(JwtCodec::from_secret("secret-de-test-suffisamment-long-pour-hs256")),
+        jwt: Arc::new(JwtService::from_secret("secret-de-test-suffisamment-long-pour-hs256")),
         cookie_name: "drive_token".to_string(),
         default_quota_bytes: 0,
         storage: FsStorage::new(PathBuf::from(std::env::temp_dir())),

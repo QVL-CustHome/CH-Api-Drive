@@ -1,7 +1,7 @@
 use crate::config::Settings;
 use crate::db::Db;
+use crate::services::jwt::JwtService;
 use crate::services::storage::FsStorage;
-use ch_auth_jwt::JwtCodec;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -9,7 +9,7 @@ use std::time::Duration;
 #[derive(Clone)]
 pub struct AppState {
     pub db: Db,
-    pub jwt: Arc<JwtCodec>,
+    pub jwt: Arc<JwtService>,
     pub cookie_name: String,
     pub default_quota_bytes: i64,
     pub storage: FsStorage,
@@ -22,7 +22,7 @@ impl AppState {
     pub fn new(settings: &Settings, db: Db) -> Self {
         Self {
             db,
-            jwt: Arc::new(JwtCodec::from_secret(&settings.secrets.jwt_secret)),
+            jwt: Arc::new(JwtService::from_secret(&settings.secrets.jwt_secret)),
             cookie_name: settings.config.token.cookie_name.clone(),
             default_quota_bytes: settings.config.storage.default_quota_bytes,
             storage: FsStorage::new(PathBuf::from(&settings.config.storage.root)),
