@@ -4,9 +4,23 @@ use axum::Router;
 use axum::extract::DefaultBodyLimit;
 use axum::routing::{get, patch, post};
 
+pub const API_VERSION_PREFIX: &str = "/v1";
+
 pub fn router(state: AppState) -> Router {
     Router::new()
-        .route("/health", get(handlers::health::health))
+        .merge(operational_routes())
+        .nest(API_VERSION_PREFIX, public_routes())
+        .merge(public_routes())
+        .layer(DefaultBodyLimit::disable())
+        .with_state(state)
+}
+
+fn operational_routes() -> Router<AppState> {
+    Router::new().route("/health", get(handlers::health::health))
+}
+
+fn public_routes() -> Router<AppState> {
+    Router::new()
         .route("/me/storage", get(handlers::storage::me_storage))
         .route(
             "/files",
@@ -32,6 +46,4 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/nodes/{id}/trash", post(handlers::files::trash))
         .route("/nodes/{id}/restore", post(handlers::files::restore))
-        .layer(DefaultBodyLimit::disable())
-        .with_state(state)
 }

@@ -1,3 +1,4 @@
+use crate::domain::MediaType;
 use crate::error::AppError;
 use crate::middleware::auth::DriveUser;
 use crate::repository::drive_users::{self, DriveUser as DriveUserRow};
@@ -94,11 +95,33 @@ fn validate_name(raw: &str) -> Result<String, AppError> {
     Ok(name.to_string())
 }
 
-fn classify_media(mime: Option<&str>) -> (bool, Option<String>) {
-    match mime {
-        Some(m) if m.starts_with("image/") => (true, Some("image".to_string())),
-        Some(m) if m.starts_with("video/") => (true, Some("video".to_string())),
-        _ => (false, None),
+fn resolve_mime(file_name: &str, declared: Option<&str>) -> Option<String> {
+    if let Some(guessed) = mime_guess::from_path(file_name).first_raw() {
+        return Some(guessed.to_string());
+    }
+    declared
+        .map(str::trim)
+        .filter(|ct| is_well_formed_mime(ct))
+        .map(|ct| ct.to_ascii_lowercase())
+}
+
+fn is_well_formed_mime(value: &str) -> bool {
+    match value.split_once('/') {
+        Some((kind, sub)) => {
+            !kind.is_empty()
+                && !sub.is_empty()
+                && value
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '+' | '-'))
+        }
+        None => false,
+    }
+}
+
+fn classify_media(mime: Option<&str>) -> (bool, Option<MediaType>) {
+    match mime.and_then(MediaType::from_mime) {
+        Some(media_type) => (true, Some(media_type)),
+        None => (false, None),
     }
 }
 
@@ -220,10 +243,7 @@ pub async fn upload(
     }
 
     let hash = format!("{:x}", hasher.finalize());
-    let mime = mime_guess::from_path(&original_name)
-        .first_raw()
-        .map(|s| s.to_string())
-        .or(field_ct);
+    let mime = resolve_mime(&original_name, field_ct.as_deref());
     let (is_media, media_type) = classify_media(mime.as_deref());
     let name = nodes::free_name(&state.db, user.id(), parent_id, &original_name).await?;
 
@@ -246,7 +266,7 @@ pub async fn upload(
             &key,
             &hash,
             is_media,
-            media_type.as_deref(),
+            media_type,
         )
         .await?;
         drive_users::add_used_bytes(&mut tx, user.id(), size)
@@ -259,7 +279,7 @@ pub async fn upload(
 
     match insert {
         Ok(node) => {
-            let node = if media_type.as_deref() == Some("image") {
+            let node = if media_type == Some(MediaType::Image) {
                 generate_thumbnail(&state, user.id(), node.id, &key)
                     .await
                     .unwrap_or(node)
@@ -585,4 +605,130 @@ pub async fn restore(
         .await?
         .ok_or(AppError::NotFound("Élément introuvable."))?;
     Ok(Json(node.to_dto()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_name_trims_and_accepts() {
+        assert_eq!(validate_name("  photo.jpg  ").unwrap(), "photo.jpg");
+    }
+
+    #[test]
+    fn validate_name_rejects_empty() {
+        assert!(matches!(validate_name("   "), Err(AppError::Validation(_))));
+    }
+
+    #[test]
+    fn validate_name_rejects_too_long() {
+        let long = "a".repeat(256);
+        assert!(matches!(validate_name(&long), Err(AppError::Validation(_))));
+    }
+
+    #[test]
+    fn validate_name_rejects_dot_segments() {
+        assert!(matches!(validate_name("."), Err(AppError::Validation(_))));
+        assert!(matches!(validate_name(".."), Err(AppError::Validation(_))));
+    }
+
+    #[test]
+    fn validate_name_rejects_path_separators() {
+        assert!(matches!(
+            validate_name("a/b"),
+            Err(AppError::Validation(_))
+        ));
+        assert!(matches!(
+            validate_name("a\\b"),
+            Err(AppError::Validation(_))
+        ));
+    }
+
+    #[test]
+    fn validate_name_rejects_control_chars() {
+        assert!(matches!(
+            validate_name("a\tb"),
+            Err(AppError::Validation(_))
+        ));
+    }
+
+    #[test]
+    fn parse_range_full_suffix() {
+        assert_eq!(parse_range("bytes=0-99", 1000), Some((0, 99)));
+    }
+
+    #[test]
+    fn parse_range_open_ended() {
+        assert_eq!(parse_range("bytes=100-", 1000), Some((100, 999)));
+    }
+
+    #[test]
+    fn parse_range_suffix_length() {
+        assert_eq!(parse_range("bytes=-100", 1000), Some((900, 999)));
+    }
+
+    #[test]
+    fn parse_range_suffix_larger_than_total() {
+        assert_eq!(parse_range("bytes=-5000", 1000), Some((0, 999)));
+    }
+
+    #[test]
+    fn parse_range_clamps_end_to_total() {
+        assert_eq!(parse_range("bytes=0-5000", 1000), Some((0, 999)));
+    }
+
+    #[test]
+    fn parse_range_rejects_invalid() {
+        assert_eq!(parse_range("items=0-99", 1000), None);
+        assert_eq!(parse_range("bytes=abc", 1000), None);
+        assert_eq!(parse_range("bytes=-", 1000), None);
+        assert_eq!(parse_range("bytes=0-99", 0), None);
+    }
+
+    #[test]
+    fn parse_range_rejects_start_beyond_total() {
+        assert_eq!(parse_range("bytes=2000-3000", 1000), None);
+    }
+
+    #[test]
+    fn classify_media_detects_image_and_video() {
+        assert_eq!(classify_media(Some("image/png")), (true, Some(MediaType::Image)));
+        assert_eq!(classify_media(Some("video/mp4")), (true, Some(MediaType::Video)));
+        assert_eq!(classify_media(Some("application/pdf")), (false, None));
+        assert_eq!(classify_media(None), (false, None));
+    }
+
+    #[test]
+    fn resolve_mime_prefers_extension() {
+        assert_eq!(
+            resolve_mime("photo.png", Some("application/octet-stream")).as_deref(),
+            Some("image/png")
+        );
+    }
+
+    #[test]
+    fn resolve_mime_falls_back_to_valid_declared() {
+        assert_eq!(
+            resolve_mime("blob", Some("Application/JSON")).as_deref(),
+            Some("application/json")
+        );
+    }
+
+    #[test]
+    fn resolve_mime_rejects_malformed_declared() {
+        assert_eq!(resolve_mime("blob", Some("not-a-mime")), None);
+        assert_eq!(resolve_mime("blob", Some("image/<script>")), None);
+        assert_eq!(resolve_mime("blob", None), None);
+    }
+
+    #[test]
+    fn is_well_formed_mime_checks() {
+        assert!(is_well_formed_mime("image/png"));
+        assert!(is_well_formed_mime("application/vnd.api+json"));
+        assert!(!is_well_formed_mime("image"));
+        assert!(!is_well_formed_mime("/png"));
+        assert!(!is_well_formed_mime("image/"));
+        assert!(!is_well_formed_mime("image/png; charset=utf-8"));
+    }
 }

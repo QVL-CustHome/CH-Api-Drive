@@ -1,3 +1,4 @@
 /target
 /Drive
 .env
+.startup-logs/
