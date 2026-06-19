@@ -208,12 +208,12 @@ name = "ch-api-drive"
 version = "0.1.0"
 dependencies = [
  "axum",
- "ch-auth-jwt",
  "chrono",
  "dotenvy",
  "figment",
  "http-body-util",
  "image",
+ "jsonwebtoken",
  "kamadak-exif",
  "mime_guess",
  "reqwest",
@@ -229,14 +229,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
-]
-
-[[package]]
-name = "ch-auth-jwt"
-version = "0.1.0"
-dependencies = [
- "jsonwebtoken",
- "serde",
 ]
 
 [[package]]
