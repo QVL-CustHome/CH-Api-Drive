@@ -1,5 +1,6 @@
 use crate::error::AppError;
 use crate::services::jwt::Claims;
+use crate::services::storage::is_object_id;
 use crate::state::AppState;
 use axum::extract::FromRequestParts;
 use axum::http::header;
@@ -25,6 +26,9 @@ impl FromRequestParts<AppState> for DriveUser {
             .jwt
             .validate(&token)
             .map_err(|_| AppError::InvalidToken)?;
+        if !is_object_id(&claims.sub) {
+            return Err(AppError::InvalidToken);
+        }
         Ok(DriveUser(claims))
     }
 }
@@ -43,6 +47,9 @@ impl FromRequestParts<AppState> for DriveAdmin {
             .jwt
             .validate(&token)
             .map_err(|_| AppError::InvalidToken)?;
+        if !is_object_id(&claims.sub) {
+            return Err(AppError::InvalidToken);
+        }
         if !claims.roles.iter().any(|r| r == "drive_admin") {
             return Err(AppError::Forbidden("Rôle administrateur Drive requis."));
         }

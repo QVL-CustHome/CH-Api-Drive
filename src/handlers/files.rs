@@ -181,7 +181,8 @@ pub async fn upload(
     let field_ct = field.content_type().map(|s| s.to_string());
 
     let node_id = Uuid::new_v4();
-    let key = FsStorage::build_key(user.id(), node_id);
+    let key = FsStorage::build_key(user.id(), node_id)
+        .map_err(|_| AppError::Forbidden("Identité de stockage invalide."))?;
     let remaining = (du.quota_bytes - du.used_bytes).max(0);
 
     let mut writer = state
