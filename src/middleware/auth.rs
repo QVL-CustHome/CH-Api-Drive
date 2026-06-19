@@ -1,10 +1,10 @@
 use crate::error::AppError;
-use crate::services::jwt::Claims;
 use crate::services::storage::is_object_id;
 use crate::state::AppState;
 use axum::extract::FromRequestParts;
 use axum::http::header;
 use axum::http::request::Parts;
+use ch_auth_jwt::{Claims, extract_token};
 
 pub struct DriveUser(pub Claims);
 
@@ -21,14 +21,7 @@ impl FromRequestParts<AppState> for DriveUser {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        let token = extract_token(parts, &state.cookie_name).ok_or(AppError::InvalidToken)?;
-        let claims = state
-            .jwt
-            .validate(&token)
-            .map_err(|_| AppError::InvalidToken)?;
-        if !is_object_id(&claims.sub) {
-            return Err(AppError::InvalidToken);
-        }
+        let claims = authenticate(parts, state)?;
         Ok(DriveUser(claims))
     }
 }
@@ -42,14 +35,7 @@ impl FromRequestParts<AppState> for DriveAdmin {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        let token = extract_token(parts, &state.cookie_name).ok_or(AppError::InvalidToken)?;
-        let claims = state
-            .jwt
-            .validate(&token)
-            .map_err(|_| AppError::InvalidToken)?;
-        if !is_object_id(&claims.sub) {
-            return Err(AppError::InvalidToken);
-        }
+        let claims = authenticate(parts, state)?;
         if !claims.roles.iter().any(|r| r == "drive_admin") {
             return Err(AppError::Forbidden("Rôle administrateur Drive requis."));
         }
@@ -57,16 +43,17 @@ impl FromRequestParts<AppState> for DriveAdmin {
     }
 }
 
-fn extract_token(parts: &Parts, cookie_name: &str) -> Option<String> {
-    if let Some(value) = parts.headers.get(header::AUTHORIZATION) {
-        let token = value.to_str().ok()?.strip_prefix("Bearer ")?.trim();
-        return (!token.is_empty()).then(|| token.to_string());
+fn authenticate(parts: &Parts, state: &AppState) -> Result<Claims, AppError> {
+    let authorization = header_value(parts, header::AUTHORIZATION);
+    let cookie = header_value(parts, header::COOKIE);
+    let token = extract_token(authorization, cookie, &state.cookie_name).ok_or(AppError::InvalidToken)?;
+    let claims = state.jwt.decode(&token).map_err(|_| AppError::InvalidToken)?;
+    if !is_object_id(&claims.sub) {
+        return Err(AppError::InvalidToken);
     }
+    Ok(claims)
+}
 
-    let cookies = parts.headers.get(header::COOKIE)?.to_str().ok()?;
-    cookies.split(';').find_map(|pair| {
-        let (name, value) = pair.trim().split_once('=')?;
-        let value = value.trim();
-        (name == cookie_name && !value.is_empty()).then(|| value.to_string())
-    })
+fn header_value(parts: &Parts, name: header::HeaderName) -> Option<&str> {
+    parts.headers.get(name)?.to_str().ok()
 }
