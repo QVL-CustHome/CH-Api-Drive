@@ -1,4 +1,5 @@
 use crate::db::Db;
+use crate::domain::{MediaType, NodeKind};
 use crate::error::AppError;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -10,14 +11,14 @@ pub struct Node {
     pub id: Uuid,
     pub owner_id: String,
     pub parent_id: Option<Uuid>,
-    pub kind: String,
+    pub kind: NodeKind,
     pub name: String,
     pub mime: Option<String>,
     pub size_bytes: i64,
     pub storage_key: Option<String>,
     pub content_hash: Option<String>,
     pub is_media: bool,
-    pub media_type: Option<String>,
+    pub media_type: Option<MediaType>,
     pub taken_at: Option<DateTime<Utc>>,
     pub width: Option<i32>,
     pub height: Option<i32>,
@@ -32,12 +33,12 @@ pub struct Node {
 pub struct NodeDto {
     pub id: Uuid,
     pub parent_id: Option<Uuid>,
-    pub kind: String,
+    pub kind: NodeKind,
     pub name: String,
     pub mime: Option<String>,
     pub size_bytes: i64,
     pub is_media: bool,
-    pub media_type: Option<String>,
+    pub media_type: Option<MediaType>,
     pub width: Option<i32>,
     pub height: Option<i32>,
     pub duration_ms: Option<i32>,
@@ -53,12 +54,12 @@ impl Node {
         NodeDto {
             id: self.id,
             parent_id: self.parent_id,
-            kind: self.kind.clone(),
+            kind: self.kind,
             name: self.name.clone(),
             mime: self.mime.clone(),
             size_bytes: self.size_bytes,
             is_media: self.is_media,
-            media_type: self.media_type.clone(),
+            media_type: self.media_type,
             width: self.width,
             height: self.height,
             duration_ms: self.duration_ms,
@@ -71,7 +72,7 @@ impl Node {
     }
 
     pub fn is_folder(&self) -> bool {
-        self.kind == "folder"
+        self.kind.is_folder()
     }
 }
 
@@ -232,7 +233,7 @@ pub async fn insert_file(
     storage_key: &str,
     content_hash: &str,
     is_media: bool,
-    media_type: Option<&str>,
+    media_type: Option<MediaType>,
 ) -> Result<Node, AppError> {
     let id = Uuid::new_v4();
     let sql = format!(
