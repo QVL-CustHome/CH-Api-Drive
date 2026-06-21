@@ -6,12 +6,14 @@ use axum::routing::{get, patch, post};
 
 pub const API_VERSION_PREFIX: &str = "/v1";
 
+pub const UPLOAD_BODY_LIMIT_BYTES: usize = 256 * 1024 * 1024;
+pub const API_BODY_LIMIT_BYTES: usize = 1024 * 1024;
+
 pub fn router(state: AppState) -> Router {
     Router::new()
         .merge(operational_routes())
         .nest(API_VERSION_PREFIX, public_routes())
         .merge(public_routes())
-        .layer(DefaultBodyLimit::disable())
         .with_state(state)
 }
 
@@ -20,12 +22,19 @@ fn operational_routes() -> Router<AppState> {
 }
 
 fn public_routes() -> Router<AppState> {
+    upload_routes().merge(api_routes())
+}
+
+fn upload_routes() -> Router<AppState> {
+    Router::new()
+        .route("/files", post(handlers::files::upload))
+        .layer(DefaultBodyLimit::max(UPLOAD_BODY_LIMIT_BYTES))
+}
+
+fn api_routes() -> Router<AppState> {
     Router::new()
         .route("/me/storage", get(handlers::storage::me_storage))
-        .route(
-            "/files",
-            get(handlers::files::list).post(handlers::files::upload),
-        )
+        .route("/files", get(handlers::files::list))
         .route("/files/{id}/content", get(handlers::files::download))
         .route("/files/{id}/thumbnail", get(handlers::files::thumbnail))
         .route("/gallery", get(handlers::files::gallery))
@@ -46,4 +55,5 @@ fn public_routes() -> Router<AppState> {
         )
         .route("/nodes/{id}/trash", post(handlers::files::trash))
         .route("/nodes/{id}/restore", post(handlers::files::restore))
+        .layer(DefaultBodyLimit::max(API_BODY_LIMIT_BYTES))
 }

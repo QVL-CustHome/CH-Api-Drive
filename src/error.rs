@@ -18,12 +18,31 @@ pub enum AppError {
     NotFound(&'static str),
     #[error("quota de stockage dépassé")]
     QuotaExceeded,
+    #[error("{0}")]
+    PayloadTooLarge(&'static str),
     #[error("erreur interne")]
     Internal,
 }
 
+pub const BODY_LIMIT_MESSAGE: &str =
+    "La taille du corps de la requête dépasse la limite autorisée.";
+
+fn is_length_limit(error: &(dyn std::error::Error + 'static)) -> bool {
+    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(error);
+    while let Some(source) = current {
+        if source.is::<axum::extract::rejection::LengthLimitError>() {
+            return true;
+        }
+        current = source.source();
+    }
+    false
+}
+
 impl From<JsonRejection> for AppError {
     fn from(rejection: JsonRejection) -> Self {
+        if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE || is_length_limit(&rejection) {
+            return AppError::PayloadTooLarge(BODY_LIMIT_MESSAGE);
+        }
         let message = match rejection {
             JsonRejection::JsonDataError(_) => {
                 "Données invalides : un ou plusieurs champs sont incorrects ou manquants."
@@ -65,6 +84,7 @@ impl IntoResponse for AppError {
             AppError::Conflict(_) => (StatusCode::CONFLICT, "conflict"),
             AppError::NotFound(_) => (StatusCode::NOT_FOUND, "not_found"),
             AppError::QuotaExceeded => (StatusCode::PAYLOAD_TOO_LARGE, "quota_exceeded"),
+            AppError::PayloadTooLarge(_) => (StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large"),
             AppError::Internal => (StatusCode::INTERNAL_SERVER_ERROR, "internal_error"),
         };
         let body = json!({ "error": error, "message": self.to_string() });

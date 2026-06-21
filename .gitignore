@@ -2,3 +2,4 @@
 /Drive
 .env
 .startup-logs/
+drive_run.log
