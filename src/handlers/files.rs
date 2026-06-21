@@ -1,5 +1,5 @@
 use crate::domain::MediaType;
-use crate::error::AppError;
+use crate::error::{AppError, BODY_LIMIT_MESSAGE};
 use crate::middleware::auth::DriveUser;
 use crate::repository::drive_users::{self, DriveUser as DriveUserRow};
 use crate::repository::nodes::{self, Crumb, Node, NodeDto};
@@ -7,6 +7,7 @@ use crate::services::storage::FsStorage;
 use crate::state::AppState;
 use axum::Json;
 use axum::body::Body;
+use axum::extract::multipart::MultipartError;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Multipart, Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
@@ -40,6 +41,14 @@ pub struct CreateFolderBody {
 pub struct PatchBody {
     name: Option<String>,
     parent_id: Option<Uuid>,
+}
+
+fn map_multipart_error(error: &MultipartError, fallback: &'static str) -> AppError {
+    if error.status() == StatusCode::PAYLOAD_TOO_LARGE {
+        AppError::PayloadTooLarge(BODY_LIMIT_MESSAGE)
+    } else {
+        AppError::Validation(fallback.to_string())
+    }
 }
 
 async fn current_user(state: &AppState, user: &DriveUser) -> Result<DriveUserRow, AppError> {
@@ -87,7 +96,10 @@ fn validate_name(raw: &str) -> Result<String, AppError> {
     if name == "." || name == ".." {
         return Err(AppError::Validation("Nom réservé.".to_string()));
     }
-    if name.chars().any(|c| matches!(c, '/' | '\\') || c.is_control()) {
+    if name
+        .chars()
+        .any(|c| matches!(c, '/' | '\\') || c.is_control())
+    {
         return Err(AppError::Validation(
             "Le nom contient des caractères interdits.".to_string(),
         ));
@@ -125,13 +137,48 @@ fn classify_media(mime: Option<&str>) -> (bool, Option<MediaType>) {
     }
 }
 
+const ACTIVE_CONTENT_TYPES: [&str; 8] = [
+    "image/svg+xml",
+    "text/html",
+    "application/xhtml+xml",
+    "text/xml",
+    "application/xml",
+    "text/javascript",
+    "application/javascript",
+    "application/ecmascript",
+];
+
+const NEUTRAL_CONTENT_TYPE: &str = "application/octet-stream";
+
+fn served_content_type(declared: &str) -> &str {
+    let normalized = declared
+        .split(';')
+        .next()
+        .unwrap_or(declared)
+        .trim()
+        .to_ascii_lowercase();
+    if ACTIVE_CONTENT_TYPES.contains(&normalized.as_str()) {
+        NEUTRAL_CONTENT_TYPE
+    } else {
+        declared
+    }
+}
+
 fn content_disposition(name: &str) -> HeaderValue {
     let safe: String = name
         .chars()
         .map(|c| if c == '"' || c.is_control() { '_' } else { c })
         .collect();
-    HeaderValue::from_str(&format!("inline; filename=\"{safe}\""))
-        .unwrap_or_else(|_| HeaderValue::from_static("inline"))
+    HeaderValue::from_str(&format!("attachment; filename=\"{safe}\""))
+        .unwrap_or_else(|_| HeaderValue::from_static("attachment"))
+}
+
+fn apply_download_security_headers(headers: &mut HeaderMap, name: &str) {
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(header::CONTENT_DISPOSITION, content_disposition(name));
 }
 
 pub async fn list(
@@ -185,7 +232,7 @@ pub async fn upload(
         match multipart
             .next_field()
             .await
-            .map_err(|_| AppError::Validation("Requête multipart invalide.".to_string()))?
+            .map_err(|e| map_multipart_error(&e, "Requête multipart invalide."))?
         {
             Some(f) if f.name() == Some("file") => break f,
             Some(_) => continue,
@@ -221,7 +268,7 @@ pub async fn upload(
     while let Some(chunk) = field
         .chunk()
         .await
-        .map_err(|_| AppError::Validation("Lecture du flux échouée.".to_string()))?
+        .map_err(|e| map_multipart_error(&e, "Lecture du flux échouée."))?
     {
         size += chunk.len() as i64;
         if size > remaining {
@@ -308,7 +355,11 @@ async fn generate_thumbnail(
         .await
         .ok()??;
     let thumb_key = FsStorage::thumb_key(blob_key);
-    state.storage.write_bytes(&thumb_key, &meta.thumbnail).await.ok()?;
+    state
+        .storage
+        .write_bytes(&thumb_key, &meta.thumbnail)
+        .await
+        .ok()?;
     nodes::set_media_meta(
         &state.db,
         owner,
@@ -348,6 +399,10 @@ pub async fn thumbnail(
     let mut resp = Response::new(Body::from_stream(stream));
     let h = resp.headers_mut();
     h.insert(header::CONTENT_TYPE, HeaderValue::from_static("image/jpeg"));
+    h.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
     h.insert(
         header::CACHE_CONTROL,
         HeaderValue::from_static("private, max-age=86400"),
@@ -456,12 +511,13 @@ pub async fn download(
         .await
         .map_err(|_| AppError::NotFound("Contenu introuvable."))?;
     let total = meta.len();
-    let mime = node
+    let declared_mime = node
         .mime
         .clone()
-        .unwrap_or_else(|| "application/octet-stream".to_string());
+        .unwrap_or_else(|| NEUTRAL_CONTENT_TYPE.to_string());
+    let mime = served_content_type(&declared_mime).to_string();
     let mime_header =
-        HeaderValue::from_str(&mime).unwrap_or(HeaderValue::from_static("application/octet-stream"));
+        HeaderValue::from_str(&mime).unwrap_or(HeaderValue::from_static(NEUTRAL_CONTENT_TYPE));
 
     let range = headers
         .get(header::RANGE)
@@ -492,7 +548,7 @@ pub async fn download(
                     .unwrap_or(HeaderValue::from_static("bytes */0")),
             );
             h.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
-            h.insert(header::CONTENT_DISPOSITION, content_disposition(&node.name));
+            apply_download_security_headers(h, &node.name);
             Ok(resp)
         }
         None => {
@@ -502,7 +558,7 @@ pub async fn download(
             h.insert(header::CONTENT_TYPE, mime_header);
             h.insert(header::CONTENT_LENGTH, HeaderValue::from(total));
             h.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
-            h.insert(header::CONTENT_DISPOSITION, content_disposition(&node.name));
+            apply_download_security_headers(h, &node.name);
             Ok(resp)
         }
     }
@@ -635,10 +691,7 @@ mod tests {
 
     #[test]
     fn validate_name_rejects_path_separators() {
-        assert!(matches!(
-            validate_name("a/b"),
-            Err(AppError::Validation(_))
-        ));
+        assert!(matches!(validate_name("a/b"), Err(AppError::Validation(_))));
         assert!(matches!(
             validate_name("a\\b"),
             Err(AppError::Validation(_))
@@ -693,8 +746,14 @@ mod tests {
 
     #[test]
     fn classify_media_detects_image_and_video() {
-        assert_eq!(classify_media(Some("image/png")), (true, Some(MediaType::Image)));
-        assert_eq!(classify_media(Some("video/mp4")), (true, Some(MediaType::Video)));
+        assert_eq!(
+            classify_media(Some("image/png")),
+            (true, Some(MediaType::Image))
+        );
+        assert_eq!(
+            classify_media(Some("video/mp4")),
+            (true, Some(MediaType::Video))
+        );
         assert_eq!(classify_media(Some("application/pdf")), (false, None));
         assert_eq!(classify_media(None), (false, None));
     }
