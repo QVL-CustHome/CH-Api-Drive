@@ -22,7 +22,11 @@ impl AppState {
     pub fn new(settings: &Settings, db: Db) -> Self {
         Self {
             db,
-            jwt: Arc::new(JwtService::from_secret(&settings.secrets.jwt_secret)),
+            jwt: Arc::new(JwtService::from_secret(
+                &settings.secrets.jwt_secret,
+                &settings.config.token.issuer,
+                &settings.config.token.audience,
+            )),
             cookie_name: settings.config.token.cookie_name.clone(),
             default_quota_bytes: settings.config.storage.default_quota_bytes,
             storage: FsStorage::new(PathBuf::from(&settings.config.storage.root)),

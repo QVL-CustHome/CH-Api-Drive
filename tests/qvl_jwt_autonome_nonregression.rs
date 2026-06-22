@@ -4,11 +4,13 @@ use std::time::Duration;
 
 const SECRET: &str = "secret-de-test-suffisamment-long-pour-hs256";
 const AUTRE_SECRET: &str = "un-autre-secret-tout-aussi-long-pour-hs256";
+const ISSUER: &str = "ch-api-authenticator";
+const AUDIENCE: &str = "ch-api-drive";
 const SUB_OBJECT_ID: &str = "0123456789abcdef01234567";
 const SUB_NON_OBJECT_ID: &str = "alice@example.com";
 
 fn service() -> JwtService {
-    JwtService::from_secret(SECRET)
+    JwtService::from_secret(SECRET, ISSUER, AUDIENCE)
 }
 
 #[test]
@@ -28,7 +30,15 @@ fn token_valide_est_decode_et_restitue_les_claims() {
 fn token_expire_est_rejete() {
     let service = service();
     let now = ch_api_drive::services::jwt::unix_now();
-    let claims = Claims::new(SUB_OBJECT_ID, vec!["drive_user".to_string()], None, now - 7200, now - 3600);
+    let claims = Claims::new(
+        SUB_OBJECT_ID,
+        vec!["drive_user".to_string()],
+        None,
+        Some(ISSUER.to_string()),
+        vec![AUDIENCE.to_string()],
+        now - 7200,
+        now - 3600,
+    );
     let token = service.encode(&claims).expect("emission du token expire");
 
     assert!(service.decode(&token).is_err());
@@ -36,7 +46,7 @@ fn token_expire_est_rejete() {
 
 #[test]
 fn token_signe_avec_mauvaise_cle_est_rejete() {
-    let emetteur = JwtService::from_secret(AUTRE_SECRET);
+    let emetteur = JwtService::from_secret(AUTRE_SECRET, ISSUER, AUDIENCE);
     let token = emetteur
         .issue(SUB_OBJECT_ID, vec!["drive_user".to_string()], None, Duration::from_secs(3600))
         .expect("emission du token");
