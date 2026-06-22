@@ -51,6 +51,12 @@ pub struct StorageConfig {
 pub struct TokenConfig {
     #[serde(default = "default_cookie_name")]
     pub cookie_name: String,
+
+    #[serde(default = "default_jwt_issuer")]
+    pub issuer: String,
+
+    #[serde(default = "default_audience")]
+    pub audience: String,
 }
 
 #[derive(Clone)]
@@ -77,6 +83,14 @@ pub fn load(path: &str) -> Result<Settings, ConfigError> {
 
     if let Some(url) = optional("AUTH_INTERNAL_URL") {
         config.auth_internal_url = url;
+    }
+
+    if let Some(issuer) = optional("JWT_ISSUER") {
+        config.token.issuer = issuer;
+    }
+
+    if let Some(audience) = optional("JWT_AUDIENCE") {
+        config.token.audience = audience;
     }
 
     let secrets = Secrets {
@@ -115,6 +129,14 @@ fn default_log_level() -> String {
 
 fn default_cookie_name() -> String {
     "ch_token".to_string()
+}
+
+fn default_jwt_issuer() -> String {
+    "ch-api-authenticator".to_string()
+}
+
+fn default_audience() -> String {
+    "ch-api-drive".to_string()
 }
 
 fn default_auth_internal_url() -> String {

@@ -17,15 +17,24 @@ pub struct Claims {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ip: Option<String>,
 
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub iss: Option<String>,
+
+    #[serde(default, deserialize_with = "deserialize_audience")]
+    pub aud: Vec<String>,
+
     pub iat: u64,
     pub exp: u64,
 }
 
 impl Claims {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         sub: impl Into<String>,
         roles: Vec<String>,
         ip: Option<String>,
+        iss: Option<String>,
+        aud: Vec<String>,
         iat: u64,
         exp: u64,
     ) -> Self {
@@ -33,6 +42,8 @@ impl Claims {
             sub: sub.into(),
             roles,
             ip,
+            iss,
+            aud,
             iat,
             exp,
         }
@@ -41,6 +52,24 @@ impl Claims {
     pub fn has_role(&self, role: &str) -> bool {
         self.roles.iter().any(|owned| owned == role)
     }
+}
+
+fn deserialize_audience<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum AudienceFormat {
+        One(String),
+        Many(Vec<String>),
+    }
+
+    Ok(match Option::<AudienceFormat>::deserialize(deserializer)? {
+        None => Vec::new(),
+        Some(AudienceFormat::One(value)) => vec![value],
+        Some(AudienceFormat::Many(values)) => values,
+    })
 }
 
 fn deserialize_roles<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
@@ -72,18 +101,27 @@ pub struct JwtService {
     encoding: EncodingKey,
     decoding: DecodingKey,
     algorithm: Algorithm,
+    issuer: String,
+    audience: String,
 }
 
 impl JwtService {
-    pub fn from_secret(secret: &str) -> Self {
-        Self::with_algorithm(secret, DEFAULT_ALGORITHM)
+    pub fn from_secret(secret: &str, issuer: &str, audience: &str) -> Self {
+        Self::with_algorithm(secret, issuer, audience, DEFAULT_ALGORITHM)
     }
 
-    pub fn with_algorithm(secret: &str, algorithm: Algorithm) -> Self {
+    pub fn with_algorithm(
+        secret: &str,
+        issuer: &str,
+        audience: &str,
+        algorithm: Algorithm,
+    ) -> Self {
         Self {
             encoding: EncodingKey::from_secret(secret.as_bytes()),
             decoding: DecodingKey::from_secret(secret.as_bytes()),
             algorithm,
+            issuer: issuer.to_string(),
+            audience: audience.to_string(),
         }
     }
 
@@ -92,7 +130,10 @@ impl JwtService {
     }
 
     pub fn decode(&self, token: &str) -> Result<Claims, JwtError> {
-        let validation = Validation::new(self.algorithm);
+        let mut validation = Validation::new(self.algorithm);
+        validation.set_required_spec_claims(&["exp", "iss", "aud"]);
+        validation.set_issuer(&[&self.issuer]);
+        validation.set_audience(&[&self.audience]);
         Ok(jsonwebtoken::decode::<Claims>(token, &self.decoding, &validation)?.claims)
     }
 
@@ -112,7 +153,15 @@ impl JwtService {
         ttl: Duration,
     ) -> Result<String, JwtError> {
         let now = unix_now();
-        let claims = Claims::new(sub, roles, ip, now, now + ttl.as_secs());
+        let claims = Claims::new(
+            sub,
+            roles,
+            ip,
+            Some(self.issuer.clone()),
+            vec![self.audience.clone()],
+            now,
+            now + ttl.as_secs(),
+        );
         self.encode(&claims)
     }
 }

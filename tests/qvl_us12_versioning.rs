@@ -15,7 +15,11 @@ fn test_state() -> AppState {
         .expect("pool paresseux");
     AppState {
         db,
-        jwt: Arc::new(JwtService::from_secret("secret-de-test-suffisamment-long-pour-hs256")),
+        jwt: Arc::new(JwtService::from_secret(
+            "secret-de-test-suffisamment-long-pour-hs256",
+            "ch-api-authenticator",
+            "ch-api-drive",
+        )),
         cookie_name: "drive_token".to_string(),
         default_quota_bytes: 0,
         storage: FsStorage::new(PathBuf::from(std::env::temp_dir())),
