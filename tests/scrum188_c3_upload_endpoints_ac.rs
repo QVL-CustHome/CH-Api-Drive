@@ -7,7 +7,7 @@ use ch_api_drive::routes::router;
 use ch_api_drive::services::jwt::JwtService;
 use ch_api_drive::services::storage::FsStorage;
 use ch_api_drive::state::AppState;
-use common::{seed_drive_user, DisposableDb};
+use common::{seed_drive_user, DisposableDb, NoopEventPublisher};
 use http_body_util::BodyExt;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -52,6 +52,7 @@ impl TestApp {
             cookie_name: "ch_token".to_string(),
             default_quota_bytes: 50_000_000_000,
             storage: FsStorage::new(storage_root.clone()),
+            event_publisher: Arc::new(NoopEventPublisher),
             auth_internal_url: "http://localhost:8181".to_string(),
             internal_secret: "x".repeat(32),
             http_client: reqwest::Client::new(),
