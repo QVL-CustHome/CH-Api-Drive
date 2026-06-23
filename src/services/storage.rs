@@ -1,6 +1,30 @@
-use std::io::{Error, ErrorKind, Result};
+use std::future::Future;
+use std::io::{Error, ErrorKind, Result, SeekFrom};
 use std::path::{Component, Path, PathBuf};
 use tokio::fs;
+use tokio::io::{AsyncSeekExt, AsyncWriteExt};
+
+pub trait Storage: Clone + Send + Sync {
+    fn write_bytes(&self, key: &str, bytes: &[u8]) -> impl Future<Output = Result<()>> + Send;
+
+    fn write_at(
+        &self,
+        key: &str,
+        offset: u64,
+        bytes: &[u8],
+    ) -> impl Future<Output = Result<()>> + Send;
+
+    fn create_writer(&self, key: &str) -> impl Future<Output = Result<fs::File>> + Send;
+
+    fn open(&self, key: &str) -> impl Future<Output = Result<fs::File>> + Send;
+
+    fn finalize(&self, tmp_key: &str, storage_key: &str)
+    -> impl Future<Output = Result<()>> + Send;
+
+    fn delete(&self, key: &str) -> impl Future<Output = Result<()>> + Send;
+
+    fn metadata(&self, key: &str) -> impl Future<Output = Result<std::fs::Metadata>> + Send;
+}
 
 #[derive(Clone)]
 pub struct FsStorage {
@@ -68,6 +92,82 @@ impl FsStorage {
     pub async fn metadata(&self, key: &str) -> Result<std::fs::Metadata> {
         fs::metadata(self.resolve(key)?).await
     }
+
+    pub async fn write_at(&self, key: &str, offset: u64, bytes: &[u8]) -> Result<()> {
+        let path = self.resolve(key)?;
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).await?;
+        }
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .read(false)
+            .truncate(false)
+            .open(path)
+            .await?;
+        file.seek(SeekFrom::Start(offset)).await?;
+        file.write_all(bytes).await?;
+        file.flush().await?;
+        file.sync_data().await
+    }
+
+    pub async fn finalize(&self, tmp_key: &str, storage_key: &str) -> Result<()> {
+        let source = self.resolve(tmp_key)?;
+        let destination = self.resolve(storage_key)?;
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent).await?;
+        }
+        match fs::rename(&source, &destination).await {
+            Ok(()) => Ok(()),
+            Err(e) if is_cross_device(&e) => {
+                finalize_across_devices(&source, &destination).await
+            }
+            Err(e) => Err(e),
+        }
+    }
+}
+
+const EXDEV: i32 = 18;
+
+fn is_cross_device(error: &Error) -> bool {
+    error.raw_os_error() == Some(EXDEV)
+}
+
+async fn finalize_across_devices(source: &Path, destination: &Path) -> Result<()> {
+    fs::copy(source, destination).await?;
+    let destination_file = fs::File::open(destination).await?;
+    destination_file.sync_all().await?;
+    fs::remove_file(source).await
+}
+
+impl Storage for FsStorage {
+    async fn write_bytes(&self, key: &str, bytes: &[u8]) -> Result<()> {
+        FsStorage::write_bytes(self, key, bytes).await
+    }
+
+    async fn write_at(&self, key: &str, offset: u64, bytes: &[u8]) -> Result<()> {
+        FsStorage::write_at(self, key, offset, bytes).await
+    }
+
+    async fn create_writer(&self, key: &str) -> Result<fs::File> {
+        FsStorage::create_writer(self, key).await
+    }
+
+    async fn open(&self, key: &str) -> Result<fs::File> {
+        FsStorage::open(self, key).await
+    }
+
+    async fn finalize(&self, tmp_key: &str, storage_key: &str) -> Result<()> {
+        FsStorage::finalize(self, tmp_key, storage_key).await
+    }
+
+    async fn delete(&self, key: &str) -> Result<()> {
+        FsStorage::delete(self, key).await
+    }
+
+    async fn metadata(&self, key: &str) -> Result<std::fs::Metadata> {
+        FsStorage::metadata(self, key).await
+    }
 }
 
 pub fn is_object_id(value: &str) -> bool {
@@ -85,8 +185,29 @@ fn is_safe_relative_key(key: &str) -> bool {
         return false;
     }
     let path = Path::new(key);
-    path.components()
-        .all(|component| matches!(component, Component::Normal(_)))
+    path.components().all(|component| match component {
+        Component::Normal(segment) => match segment.to_str() {
+            Some(name) => !is_reserved_windows_name(name),
+            None => false,
+        },
+        _ => false,
+    })
+}
+
+const RESERVED_WINDOWS_DEVICE_STEMS: [&str; 25] = [
+    "CON", "PRN", "AUX", "NUL", "COM0", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7",
+    "COM8", "COM9", "LPT0", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    "CLOCK$",
+];
+
+fn is_reserved_windows_name(segment: &str) -> bool {
+    let stem = match segment.split_once('.') {
+        Some((before_extension, _)) => before_extension,
+        None => segment,
+    };
+    RESERVED_WINDOWS_DEVICE_STEMS
+        .iter()
+        .any(|reserved| stem.eq_ignore_ascii_case(reserved))
 }
 
 #[cfg(test)]
@@ -364,5 +485,62 @@ mod tests {
     fn resolve_rejects_mixed_separators_key() {
         let err = storage().resolve("..\\../etc").unwrap_err();
         assert_eq!(err.kind(), ErrorKind::PermissionDenied);
+    }
+
+    #[test]
+    fn is_safe_relative_key_rejects_reserved_nul() {
+        assert!(!is_safe_relative_key("NUL"));
+    }
+
+    #[test]
+    fn is_safe_relative_key_rejects_reserved_con() {
+        assert!(!is_safe_relative_key("CON"));
+    }
+
+    #[test]
+    fn is_safe_relative_key_rejects_reserved_com1() {
+        assert!(!is_safe_relative_key("COM1"));
+    }
+
+    #[test]
+    fn is_safe_relative_key_rejects_reserved_name_case_insensitive() {
+        assert!(!is_safe_relative_key("nul"));
+        assert!(!is_safe_relative_key("Com1"));
+    }
+
+    #[test]
+    fn is_safe_relative_key_rejects_reserved_name_with_extension() {
+        assert!(!is_safe_relative_key("NUL.txt"));
+        assert!(!is_safe_relative_key("con.log"));
+    }
+
+    #[test]
+    fn is_safe_relative_key_rejects_reserved_name_in_any_component() {
+        assert!(!is_safe_relative_key("0123456789abcdef01234567/NUL"));
+        assert!(!is_safe_relative_key("NUL/0123456789abcdef01234567"));
+    }
+
+    #[test]
+    fn is_safe_relative_key_rejects_reserved_clock_device() {
+        assert!(!is_safe_relative_key("CLOCK$"));
+    }
+
+    #[test]
+    fn is_safe_relative_key_accepts_name_containing_reserved_as_substring() {
+        assert!(is_safe_relative_key("CONTRACT"));
+        assert!(is_safe_relative_key("COM10"));
+        assert!(is_safe_relative_key("NULLABLE"));
+    }
+
+    #[test]
+    fn is_reserved_windows_name_matches_bare_device() {
+        assert!(is_reserved_windows_name("NUL"));
+        assert!(is_reserved_windows_name("lpt9"));
+    }
+
+    #[test]
+    fn is_reserved_windows_name_ignores_unrelated_segment() {
+        assert!(!is_reserved_windows_name("vacances.jpg"));
+        assert!(!is_reserved_windows_name("nuls"));
     }
 }
