@@ -25,6 +25,9 @@ mime_guess = "2"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp"] }
 kamadak-exif = "0.5"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rumqttc = { version = "0.24", default-features = false, features = ["use-rustls"] }
+async-trait = "0.1"
+url = "2"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
