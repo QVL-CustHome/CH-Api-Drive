@@ -2,12 +2,13 @@ use crate::handlers;
 use crate::state::AppState;
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
-use axum::routing::{get, patch, post};
+use axum::routing::{get, patch, post, put};
 
 pub const API_VERSION_PREFIX: &str = "/v1";
 
 pub const UPLOAD_BODY_LIMIT_BYTES: usize = 256 * 1024 * 1024;
 pub const API_BODY_LIMIT_BYTES: usize = 1024 * 1024;
+pub const CHUNK_BODY_LIMIT_BYTES: usize = 17 * 1024 * 1024;
 
 pub fn router(state: AppState) -> Router {
     Router::new()
@@ -26,9 +27,27 @@ fn public_routes() -> Router<AppState> {
 }
 
 fn upload_routes() -> Router<AppState> {
-    Router::new()
+    let multipart = Router::new()
         .route("/files", post(handlers::files::upload))
-        .layer(DefaultBodyLimit::max(UPLOAD_BODY_LIMIT_BYTES))
+        .layer(DefaultBodyLimit::max(UPLOAD_BODY_LIMIT_BYTES));
+
+    let chunk = Router::new()
+        .route(
+            "/uploads/{id}/chunks/{index}",
+            put(handlers::upload::put_chunk),
+        )
+        .layer(DefaultBodyLimit::max(CHUNK_BODY_LIMIT_BYTES));
+
+    let sessions = Router::new()
+        .route("/uploads", post(handlers::upload::open))
+        .route(
+            "/uploads/{id}",
+            get(handlers::upload::status).delete(handlers::upload::abort),
+        )
+        .route("/uploads/{id}/complete", post(handlers::upload::complete))
+        .layer(DefaultBodyLimit::max(API_BODY_LIMIT_BYTES));
+
+    multipart.merge(chunk).merge(sessions)
 }
 
 fn api_routes() -> Router<AppState> {

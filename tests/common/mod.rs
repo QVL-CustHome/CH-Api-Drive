@@ -1,9 +1,20 @@
+use async_trait::async_trait;
+use ch_api_drive::domain::events::{EventPublisher, FileUploadedEvent, PublishError};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{Connection, Executor, PgConnection, Pool, Postgres};
 use std::time::Duration;
 use uuid::Uuid;
 
 pub const ENV_ADMIN_URL: &str = "DRIVE_TEST_DATABASE_URL";
+
+pub struct NoopEventPublisher;
+
+#[async_trait]
+impl EventPublisher for NoopEventPublisher {
+    async fn publish_file_uploaded(&self, _event: &FileUploadedEvent) -> Result<(), PublishError> {
+        Ok(())
+    }
+}
 
 pub struct DisposableDb {
     admin_url: String,
