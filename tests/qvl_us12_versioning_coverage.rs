@@ -1,5 +1,7 @@
+use async_trait::async_trait;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
+use ch_api_drive::domain::events::{EventPublisher, FileUploadedEvent, PublishError};
 use ch_api_drive::routes::{API_VERSION_PREFIX, router};
 use ch_api_drive::services::storage::FsStorage;
 use ch_api_drive::state::AppState;
@@ -8,6 +10,15 @@ use sqlx::postgres::PgPoolOptions;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tower::ServiceExt;
+
+struct NoopEventPublisher;
+
+#[async_trait]
+impl EventPublisher for NoopEventPublisher {
+    async fn publish_file_uploaded(&self, _event: &FileUploadedEvent) -> Result<(), PublishError> {
+        Ok(())
+    }
+}
 
 fn test_state() -> AppState {
     let db = PgPoolOptions::new()
@@ -23,6 +34,7 @@ fn test_state() -> AppState {
         cookie_name: "drive_token".to_string(),
         default_quota_bytes: 0,
         storage: FsStorage::new(PathBuf::from(std::env::temp_dir())),
+        event_publisher: Arc::new(NoopEventPublisher),
         auth_internal_url: "http://127.0.0.1:9".to_string(),
         internal_secret: "secret-interne-de-test".to_string(),
         http_client: reqwest::Client::new(),
