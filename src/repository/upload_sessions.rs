@@ -299,6 +299,41 @@ pub async fn count_chunks(pool: &Db, session_id: Uuid) -> Result<i64, AppError> 
     Ok(count)
 }
 
+#[derive(Debug, sqlx::FromRow)]
+pub struct ExpiredSession {
+    pub id: Uuid,
+    pub owner_id: String,
+    pub tmp_key: String,
+    pub reserved_bytes: i64,
+    pub state: UploadState,
+}
+
+pub async fn find_expired(pool: &Db, limit: i64) -> Result<Vec<ExpiredSession>, AppError> {
+    sqlx::query_as::<_, ExpiredSession>(
+        "SELECT id, owner_id, tmp_key, reserved_bytes, state \
+         FROM upload_sessions \
+         WHERE state IN ('open', 'aborted') AND expires_at < now() \
+         ORDER BY expires_at ASC \
+         LIMIT $1",
+    )
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+    .map_err(AppError::from_db)
+}
+
+pub async fn delete_if_expired(pool: &Db, id: Uuid) -> Result<bool, AppError> {
+    let result = sqlx::query(
+        "DELETE FROM upload_sessions \
+         WHERE id = $1 AND state IN ('open', 'aborted') AND expires_at < now()",
+    )
+    .bind(id)
+    .execute(pool)
+    .await
+    .map_err(AppError::from_db)?;
+    Ok(result.rows_affected() == 1)
+}
+
 pub async fn chunk_size(
     pool: &Db,
     session_id: Uuid,
