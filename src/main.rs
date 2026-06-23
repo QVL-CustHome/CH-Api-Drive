@@ -1,7 +1,12 @@
 use ch_api_drive::config;
 use ch_api_drive::db;
+use ch_api_drive::domain::events::EventPublisher;
 use ch_api_drive::routes;
+use ch_api_drive::services::event_publisher_mqtt::{
+    MqttEventPublisher, MqttEventPublisherConfig,
+};
 use ch_api_drive::state::AppState;
+use std::sync::Arc;
 
 #[tokio::main]
 async fn main() {
@@ -32,8 +37,19 @@ async fn main() {
         std::process::exit(1);
     }
 
+    let event_publisher = match build_event_publisher() {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::error!(error = %e, "Configuration du bus d'événements MQTT invalide");
+            eprintln!(
+                "Démarrage impossible — configuration du bus d'événements MQTT invalide : {e}"
+            );
+            std::process::exit(1);
+        }
+    };
+
     let port = settings.config.server.port;
-    let state = AppState::new(&settings, pool);
+    let state = AppState::new(&settings, pool, event_publisher);
     let app = routes::router(state);
 
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
@@ -50,6 +66,12 @@ async fn main() {
         eprintln!("Erreur serveur : {e}");
         std::process::exit(1);
     }
+}
+
+fn build_event_publisher() -> Result<Arc<dyn EventPublisher>, String> {
+    let config = MqttEventPublisherConfig::from_env().map_err(|e| e.to_string())?;
+    let publisher = MqttEventPublisher::new(config).map_err(|e| e.to_string())?;
+    Ok(Arc::new(publisher))
 }
 
 fn init_tracing(level: &str) {
