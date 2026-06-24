@@ -1,4 +1,5 @@
 use crate::domain::MediaType;
+use crate::domain::events::FileUploadedEvent;
 use crate::error::{AppError, BODY_LIMIT_MESSAGE};
 use crate::middleware::auth::DriveUser;
 use crate::repository::drive_users::{self, DriveUser as DriveUserRow};
@@ -333,12 +334,26 @@ pub async fn upload(
             } else {
                 node
             };
+            publish_file_uploaded(&state, &node, parent_id).await;
             Ok((StatusCode::CREATED, Json(node.to_dto())).into_response())
         }
         Err(e) => {
             let _ = state.storage.delete(&key).await;
             Err(e)
         }
+    }
+}
+
+async fn publish_file_uploaded(state: &AppState, node: &Node, parent_id: Uuid) {
+    let event = FileUploadedEvent::new(node.owner_id.clone(), node.id, parent_id, node.size_bytes);
+    if let Err(error) = state.event_publisher.publish_file_uploaded(&event).await {
+        tracing::warn!(
+            target: "drive::events",
+            event_id = %event.event_id,
+            node_id = %node.id,
+            %error,
+            "publication de l'événement fichier téléversé échouée, création confirmée malgré tout"
+        );
     }
 }
 
