@@ -67,6 +67,7 @@ fn build_app(pool: Pool<Postgres>) -> TestApp {
                 issuer: ISSUER.to_string(),
                 audience: AUDIENCE.to_string(),
             },
+            upload_gc: Default::default(),
             auth_internal_url: "http://localhost:8181".to_string(),
         },
         secrets: Secrets {
