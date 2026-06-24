@@ -2,17 +2,62 @@ use async_trait::async_trait;
 use ch_api_drive::domain::events::{EventPublisher, FileUploadedEvent, PublishError};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{Connection, Executor, PgConnection, Pool, Postgres};
+use std::sync::Mutex;
 use std::time::Duration;
 use uuid::Uuid;
 
 pub const ENV_ADMIN_URL: &str = "DRIVE_TEST_DATABASE_URL";
 
+#[allow(dead_code)]
 pub struct NoopEventPublisher;
 
 #[async_trait]
 impl EventPublisher for NoopEventPublisher {
     async fn publish_file_uploaded(&self, _event: &FileUploadedEvent) -> Result<(), PublishError> {
         Ok(())
+    }
+}
+
+#[allow(dead_code)]
+pub struct RecordingEventPublisher {
+    fail: bool,
+    captured: Mutex<Vec<FileUploadedEvent>>,
+}
+
+#[allow(dead_code)]
+impl RecordingEventPublisher {
+    pub fn succeeding() -> Self {
+        Self {
+            fail: false,
+            captured: Mutex::new(Vec::new()),
+        }
+    }
+
+    pub fn failing() -> Self {
+        Self {
+            fail: true,
+            captured: Mutex::new(Vec::new()),
+        }
+    }
+
+    pub fn captured(&self) -> Vec<FileUploadedEvent> {
+        self.captured.lock().unwrap().clone()
+    }
+
+    pub fn call_count(&self) -> usize {
+        self.captured.lock().unwrap().len()
+    }
+}
+
+#[async_trait]
+impl EventPublisher for RecordingEventPublisher {
+    async fn publish_file_uploaded(&self, event: &FileUploadedEvent) -> Result<(), PublishError> {
+        self.captured.lock().unwrap().push(event.clone());
+        if self.fail {
+            Err(PublishError::Transport("bus indisponible".to_string()))
+        } else {
+            Ok(())
+        }
     }
 }
 
