@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use rumqttc::{AsyncClient, ClientError, MqttOptions, QoS, Transport};
+use rumqttc::{AsyncClient, ClientError, MqttOptions, QoS};
 use std::sync::Arc;
 use std::time::Duration;
 use url::Url;
@@ -10,6 +10,7 @@ const OWNER_PLACEHOLDER: &str = "{owner_id}";
 const FILE_PLACEHOLDER: &str = "{file_id}";
 const CLIENT_CHANNEL_CAPACITY: usize = 64;
 const KEEP_ALIVE: Duration = Duration::from_secs(30);
+const DEFAULT_PORT: u16 = 1883;
 
 #[derive(Debug, Clone)]
 pub struct MqttEventPublisherConfig {
@@ -103,17 +104,11 @@ fn build_mqtt_options(config: &MqttEventPublisherConfig) -> Result<MqttOptions, 
         .host_str()
         .ok_or_else(|| PublishError::Connection("hôte du broker absent".to_string()))?
         .to_string();
-    let scheme = url.scheme();
-    let is_tls = matches!(scheme, "mqtts" | "ssl" | "tls");
-    let default_port = if is_tls { 8883 } else { 1883 };
-    let port = url.port().unwrap_or(default_port);
+    let port = url.port().unwrap_or(DEFAULT_PORT);
 
     let mut options = MqttOptions::new(config.client_id.clone(), host, port);
     options.set_keep_alive(KEEP_ALIVE);
     options.set_credentials(config.client_id.clone(), config.token.clone());
-    if is_tls {
-        options.set_transport(Transport::tls_with_default_config());
-    }
     Ok(options)
 }
 
