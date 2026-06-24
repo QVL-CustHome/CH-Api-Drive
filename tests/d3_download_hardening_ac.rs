@@ -1,6 +1,7 @@
 mod common;
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use axum::body::Body;
@@ -11,7 +12,7 @@ use ch_api_drive::routes;
 use ch_api_drive::services::jwt::JwtService;
 use ch_api_drive::services::storage::FsStorage;
 use ch_api_drive::state::AppState;
-use common::DisposableDb;
+use common::{DisposableDb, NoopEventPublisher};
 use http_body_util::BodyExt;
 use sqlx::Pool;
 use sqlx::Postgres;
@@ -74,7 +75,7 @@ fn build_app(pool: Pool<Postgres>) -> TestApp {
             internal_api_secret: "interne-de-test-suffisamment-long-pour-d3".to_string(),
         },
     };
-    let state = AppState::new(&settings, pool as Db);
+    let state = AppState::new(&settings, pool as Db, Arc::new(NoopEventPublisher));
     TestApp {
         state,
         storage_root,
