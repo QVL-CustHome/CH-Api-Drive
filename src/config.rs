@@ -30,6 +30,8 @@ pub struct Config {
     pub server: ServerConfig,
     pub storage: StorageConfig,
     pub token: TokenConfig,
+    #[serde(default)]
+    pub upload_gc: UploadGcConfig,
     #[serde(default = "default_auth_internal_url")]
     pub auth_internal_url: String,
 }
@@ -57,6 +59,23 @@ pub struct TokenConfig {
 
     #[serde(default = "default_audience")]
     pub audience: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UploadGcConfig {
+    #[serde(default = "default_upload_gc_interval_secs")]
+    pub interval_secs: u64,
+    #[serde(default = "default_upload_gc_batch_size")]
+    pub batch_size: i64,
+}
+
+impl Default for UploadGcConfig {
+    fn default() -> Self {
+        Self {
+            interval_secs: default_upload_gc_interval_secs(),
+            batch_size: default_upload_gc_batch_size(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -141,6 +160,14 @@ fn default_audience() -> String {
 
 fn default_auth_internal_url() -> String {
     "http://localhost:8181".to_string()
+}
+
+fn default_upload_gc_interval_secs() -> u64 {
+    300
+}
+
+fn default_upload_gc_batch_size() -> i64 {
+    100
 }
 
 #[cfg(test)]

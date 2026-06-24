@@ -1,12 +1,14 @@
 use ch_api_drive::config;
 use ch_api_drive::db;
 use ch_api_drive::domain::events::EventPublisher;
+use ch_api_drive::jobs::upload_gc::{self, GcConfig};
 use ch_api_drive::routes;
 use ch_api_drive::services::event_publisher_mqtt::{
     MqttEventPublisher, MqttEventPublisherConfig,
 };
 use ch_api_drive::state::AppState;
 use std::sync::Arc;
+use std::time::Duration;
 
 #[tokio::main]
 async fn main() {
@@ -49,7 +51,12 @@ async fn main() {
     };
 
     let port = settings.config.server.port;
+    let gc_config = GcConfig::new(Duration::from_secs(settings.config.upload_gc.interval_secs))
+        .with_batch_size(settings.config.upload_gc.batch_size);
     let state = AppState::new(&settings, pool, event_publisher);
+
+    let _gc_handle = upload_gc::spawn_gc(state.db.clone(), state.storage.clone(), gc_config);
+
     let app = routes::router(state);
 
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
