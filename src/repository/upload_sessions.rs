@@ -123,6 +123,23 @@ const SESSION_COLS: &str = "id, owner_id, parent_id, file_name, declared_mime, d
 const CHUNK_COLS: &str = "session_id, chunk_index, size_bytes, chunk_sha256, received_at";
 
 pub async fn create(pool: &Db, new: NewUploadSession<'_>) -> Result<UploadSession, AppError> {
+    insert_session(pool, new).await
+}
+
+pub async fn create_tx(
+    tx: &mut sqlx::Transaction<'_, Postgres>,
+    new: NewUploadSession<'_>,
+) -> Result<UploadSession, AppError> {
+    insert_session(&mut **tx, new).await
+}
+
+async fn insert_session<'e, E>(
+    executor: E,
+    new: NewUploadSession<'_>,
+) -> Result<UploadSession, AppError>
+where
+    E: sqlx::Executor<'e, Database = Postgres>,
+{
     let id = Uuid::new_v4();
     let sql = format!(
         "INSERT INTO upload_sessions \
@@ -144,7 +161,7 @@ pub async fn create(pool: &Db, new: NewUploadSession<'_>) -> Result<UploadSessio
         .bind(new.storage_key)
         .bind(new.tmp_key)
         .bind(new.expires_at)
-        .fetch_one(pool)
+        .fetch_one(executor)
         .await
         .map_err(AppError::from_db)
 }
@@ -280,4 +297,70 @@ pub async fn count_chunks(pool: &Db, session_id: Uuid) -> Result<i64, AppError> 
             .await
             .map_err(AppError::from_db)?;
     Ok(count)
+}
+
+#[derive(Debug, sqlx::FromRow)]
+pub struct ExpiredSession {
+    pub id: Uuid,
+    pub owner_id: String,
+    pub tmp_key: String,
+    pub reserved_bytes: i64,
+    pub state: UploadState,
+}
+
+pub async fn find_expired(pool: &Db, limit: i64) -> Result<Vec<ExpiredSession>, AppError> {
+    sqlx::query_as::<_, ExpiredSession>(
+        "SELECT id, owner_id, tmp_key, reserved_bytes, state \
+         FROM upload_sessions \
+         WHERE state IN ('open', 'aborted') AND expires_at < now() \
+         ORDER BY expires_at ASC \
+         LIMIT $1",
+    )
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+    .map_err(AppError::from_db)
+}
+
+pub async fn delete_if_expired(pool: &Db, id: Uuid) -> Result<bool, AppError> {
+    let result = sqlx::query(
+        "DELETE FROM upload_sessions \
+         WHERE id = $1 AND state IN ('open', 'aborted') AND expires_at < now()",
+    )
+    .bind(id)
+    .execute(pool)
+    .await
+    .map_err(AppError::from_db)?;
+    Ok(result.rows_affected() == 1)
+}
+
+pub async fn chunk_size(
+    pool: &Db,
+    session_id: Uuid,
+    chunk_index: i32,
+) -> Result<Option<i64>, AppError> {
+    let size: Option<i32> = sqlx::query_scalar(
+        "SELECT size_bytes FROM upload_chunks WHERE session_id = $1 AND chunk_index = $2",
+    )
+    .bind(session_id)
+    .bind(chunk_index)
+    .fetch_optional(pool)
+    .await
+    .map_err(AppError::from_db)?;
+    Ok(size.map(i64::from))
+}
+
+pub async fn sum_reserved_active(
+    tx: &mut sqlx::Transaction<'_, Postgres>,
+    owner_id: &str,
+) -> Result<i64, AppError> {
+    let total: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(reserved_bytes), 0)::BIGINT FROM upload_sessions \
+         WHERE owner_id = $1 AND state IN ('open', 'completing')",
+    )
+    .bind(owner_id)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(AppError::from_db)?;
+    Ok(total)
 }
