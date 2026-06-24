@@ -496,6 +496,9 @@ pub async fn download(
     let node = nodes::get(&state.db, user.id(), id)
         .await?
         .ok_or(AppError::NotFound("Fichier introuvable."))?;
+    if node.trashed_at.is_some() {
+        return Err(AppError::NotFound("Fichier introuvable."));
+    }
     if node.is_folder() {
         return Err(AppError::Validation(
             "Impossible de télécharger un dossier.".to_string(),
@@ -519,10 +522,15 @@ pub async fn download(
     let mime_header =
         HeaderValue::from_str(&mime).unwrap_or(HeaderValue::from_static(NEUTRAL_CONTENT_TYPE));
 
-    let range = headers
-        .get(header::RANGE)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| parse_range(s, total));
+    let raw_range = headers.get(header::RANGE).and_then(|v| v.to_str().ok());
+    let range = match raw_range {
+        Some(spec) => match parse_range(spec, total) {
+            RangeOutcome::Satisfiable(parsed) => Some(parsed),
+            RangeOutcome::Unsatisfiable => return Ok(range_not_satisfiable(total)),
+            RangeOutcome::Ignored => None,
+        },
+        None => None,
+    };
 
     let mut file = state
         .storage
@@ -564,30 +572,59 @@ pub async fn download(
     }
 }
 
-fn parse_range(raw: &str, total: u64) -> Option<(u64, u64)> {
-    if total == 0 {
-        return None;
-    }
-    let spec = raw.strip_prefix("bytes=")?;
-    let (s, e) = spec.split_once('-')?;
-    let (start, end) = match (s.trim(), e.trim()) {
-        ("", "") => return None,
-        ("", suffix) => {
-            let n: u64 = suffix.parse().ok()?;
-            let n = n.min(total);
-            (total - n, total - 1)
-        }
-        (start, "") => (start.parse().ok()?, total - 1),
-        (start, end) => {
-            let st: u64 = start.parse().ok()?;
-            let en: u64 = end.parse().ok()?;
-            (st, en.min(total - 1))
-        }
+enum RangeOutcome {
+    Satisfiable((u64, u64)),
+    Unsatisfiable,
+    Ignored,
+}
+
+fn range_not_satisfiable(total: u64) -> Response {
+    let mut resp = Response::new(Body::empty());
+    *resp.status_mut() = StatusCode::RANGE_NOT_SATISFIABLE;
+    let h = resp.headers_mut();
+    h.insert(
+        header::CONTENT_RANGE,
+        HeaderValue::from_str(&format!("bytes */{total}"))
+            .unwrap_or(HeaderValue::from_static("bytes */0")),
+    );
+    h.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+    resp
+}
+
+fn parse_range(raw: &str, total: u64) -> RangeOutcome {
+    let Some(spec) = raw.strip_prefix("bytes=") else {
+        return RangeOutcome::Ignored;
     };
-    if start > end || start >= total {
-        return None;
+    let Some((raw_start, raw_end)) = spec.split_once('-') else {
+        return RangeOutcome::Ignored;
+    };
+    if total == 0 {
+        return RangeOutcome::Unsatisfiable;
     }
-    Some((start, end))
+    let last = total - 1;
+    let bounds = match (raw_start.trim(), raw_end.trim()) {
+        ("", "") => return RangeOutcome::Ignored,
+        ("", suffix) => match suffix.parse::<u64>() {
+            Ok(0) => return RangeOutcome::Unsatisfiable,
+            Ok(n) => {
+                let n = n.min(total);
+                Some((total - n, last))
+            }
+            Err(_) => None,
+        },
+        (start, "") => start.parse::<u64>().ok().map(|st| (st, last)),
+        (start, end) => match (start.parse::<u64>(), end.parse::<u64>()) {
+            (Ok(st), Ok(en)) => Some((st, en.min(last))),
+            _ => None,
+        },
+    };
+    let Some((start, end)) = bounds else {
+        return RangeOutcome::Ignored;
+    };
+    if start >= total || start > end {
+        return RangeOutcome::Unsatisfiable;
+    }
+    RangeOutcome::Satisfiable((start, end))
 }
 
 pub async fn patch_node(
@@ -707,44 +744,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_range_full_suffix() {
-        assert_eq!(parse_range("bytes=0-99", 1000), Some((0, 99)));
-    }
-
-    #[test]
-    fn parse_range_open_ended() {
-        assert_eq!(parse_range("bytes=100-", 1000), Some((100, 999)));
-    }
-
-    #[test]
-    fn parse_range_suffix_length() {
-        assert_eq!(parse_range("bytes=-100", 1000), Some((900, 999)));
-    }
-
-    #[test]
-    fn parse_range_suffix_larger_than_total() {
-        assert_eq!(parse_range("bytes=-5000", 1000), Some((0, 999)));
-    }
-
-    #[test]
-    fn parse_range_clamps_end_to_total() {
-        assert_eq!(parse_range("bytes=0-5000", 1000), Some((0, 999)));
-    }
-
-    #[test]
-    fn parse_range_rejects_invalid() {
-        assert_eq!(parse_range("items=0-99", 1000), None);
-        assert_eq!(parse_range("bytes=abc", 1000), None);
-        assert_eq!(parse_range("bytes=-", 1000), None);
-        assert_eq!(parse_range("bytes=0-99", 0), None);
-    }
-
-    #[test]
-    fn parse_range_rejects_start_beyond_total() {
-        assert_eq!(parse_range("bytes=2000-3000", 1000), None);
-    }
-
-    #[test]
     fn classify_media_detects_image_and_video() {
         assert_eq!(
             classify_media(Some("image/png")),
@@ -789,5 +788,151 @@ mod tests {
         assert!(!is_well_formed_mime("/png"));
         assert!(!is_well_formed_mime("image/"));
         assert!(!is_well_formed_mime("image/png; charset=utf-8"));
+    }
+
+    const TOTAL: u64 = 1000;
+
+    #[test]
+    fn parse_range_full_explicit_bounds_is_satisfiable() {
+        assert!(matches!(
+            parse_range("bytes=0-499", TOTAL),
+            RangeOutcome::Satisfiable((0, 499))
+        ));
+    }
+
+    #[test]
+    fn parse_range_open_ended_start_extends_to_last_byte() {
+        assert!(matches!(
+            parse_range("bytes=500-", TOTAL),
+            RangeOutcome::Satisfiable((500, 999))
+        ));
+    }
+
+    #[test]
+    fn parse_range_single_byte_is_satisfiable() {
+        assert!(matches!(
+            parse_range("bytes=0-0", TOTAL),
+            RangeOutcome::Satisfiable((0, 0))
+        ));
+    }
+
+    #[test]
+    fn parse_range_last_byte_is_satisfiable() {
+        assert!(matches!(
+            parse_range("bytes=999-999", TOTAL),
+            RangeOutcome::Satisfiable((999, 999))
+        ));
+    }
+
+    #[test]
+    fn parse_range_suffix_returns_tail_window() {
+        assert!(matches!(
+            parse_range("bytes=-200", TOTAL),
+            RangeOutcome::Satisfiable((800, 999))
+        ));
+    }
+
+    #[test]
+    fn parse_range_suffix_larger_than_total_clamps_to_full() {
+        assert!(matches!(
+            parse_range("bytes=-5000", TOTAL),
+            RangeOutcome::Satisfiable((0, 999))
+        ));
+    }
+
+    #[test]
+    fn parse_range_end_beyond_total_clamps_to_last_byte() {
+        assert!(matches!(
+            parse_range("bytes=900-5000", TOTAL),
+            RangeOutcome::Satisfiable((900, 999))
+        ));
+    }
+
+    #[test]
+    fn parse_range_start_equal_to_total_is_unsatisfiable() {
+        assert!(matches!(
+            parse_range("bytes=1000-1100", TOTAL),
+            RangeOutcome::Unsatisfiable
+        ));
+    }
+
+    #[test]
+    fn parse_range_start_beyond_total_is_unsatisfiable() {
+        assert!(matches!(
+            parse_range("bytes=5000-", TOTAL),
+            RangeOutcome::Unsatisfiable
+        ));
+    }
+
+    #[test]
+    fn parse_range_start_greater_than_end_is_unsatisfiable() {
+        assert!(matches!(
+            parse_range("bytes=500-100", TOTAL),
+            RangeOutcome::Unsatisfiable
+        ));
+    }
+
+    #[test]
+    fn parse_range_zero_length_suffix_is_unsatisfiable() {
+        assert!(matches!(
+            parse_range("bytes=-0", TOTAL),
+            RangeOutcome::Unsatisfiable
+        ));
+    }
+
+    #[test]
+    fn parse_range_on_empty_resource_is_unsatisfiable() {
+        assert!(matches!(
+            parse_range("bytes=0-0", 0),
+            RangeOutcome::Unsatisfiable
+        ));
+    }
+
+    #[test]
+    fn parse_range_without_bytes_unit_is_ignored() {
+        assert!(matches!(
+            parse_range("items=0-499", TOTAL),
+            RangeOutcome::Ignored
+        ));
+    }
+
+    #[test]
+    fn parse_range_without_hyphen_is_ignored() {
+        assert!(matches!(
+            parse_range("bytes=500", TOTAL),
+            RangeOutcome::Ignored
+        ));
+    }
+
+    #[test]
+    fn parse_range_empty_spec_is_ignored() {
+        assert!(matches!(
+            parse_range("bytes=-", TOTAL),
+            RangeOutcome::Ignored
+        ));
+    }
+
+    #[test]
+    fn parse_range_non_numeric_bounds_are_ignored() {
+        assert!(matches!(
+            parse_range("bytes=abc-def", TOTAL),
+            RangeOutcome::Ignored
+        ));
+    }
+
+    #[test]
+    fn parse_range_non_numeric_start_is_ignored() {
+        assert!(matches!(
+            parse_range("bytes=x-100", TOTAL),
+            RangeOutcome::Ignored
+        ));
+    }
+
+    #[test]
+    fn parse_range_non_numeric_suffix_is_ignored() {
+        assert!(matches!(
+            parse_range("bytes=-xyz", TOTAL),
+            RangeOutcome::Ignored
+        ));
     }
 }
