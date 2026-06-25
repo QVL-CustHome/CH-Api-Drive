@@ -14,7 +14,6 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .merge(operational_routes())
         .nest(API_VERSION_PREFIX, public_routes())
-        .merge(public_routes())
         .with_state(state)
 }
 

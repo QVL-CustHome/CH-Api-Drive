@@ -90,7 +90,7 @@ fn multipart_file_body(file_name: &str, content: &[u8]) -> Body {
 fn upload_request(bearer: &str, file_name: &str, content: &[u8]) -> Request<Body> {
     Request::builder()
         .method("POST")
-        .uri("/files")
+        .uri(format!("{}/files", ch_api_drive::routes::API_VERSION_PREFIX))
         .header(header::AUTHORIZATION, bearer)
         .header(
             header::CONTENT_TYPE,

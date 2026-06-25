@@ -3,7 +3,7 @@ mod common;
 use axum::body::{Body, Bytes};
 use axum::http::{header, Request, StatusCode};
 use ch_api_drive::db::Db;
-use ch_api_drive::routes::router;
+use ch_api_drive::routes::{router, API_VERSION_PREFIX};
 use ch_api_drive::services::jwt::JwtService;
 use ch_api_drive::services::storage::FsStorage;
 use ch_api_drive::state::AppState;
@@ -90,7 +90,7 @@ impl TestApp {
 fn json_request(method: &str, uri: &str, token: &str, body: serde_json::Value) -> Request<Body> {
     Request::builder()
         .method(method)
-        .uri(uri)
+        .uri(format!("{API_VERSION_PREFIX}{uri}"))
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(body.to_string()))
@@ -100,7 +100,7 @@ fn json_request(method: &str, uri: &str, token: &str, body: serde_json::Value) -
 fn bare_request(method: &str, uri: &str, token: &str) -> Request<Body> {
     Request::builder()
         .method(method)
-        .uri(uri)
+        .uri(format!("{API_VERSION_PREFIX}{uri}"))
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
         .body(Body::empty())
         .unwrap()
@@ -109,7 +109,7 @@ fn bare_request(method: &str, uri: &str, token: &str) -> Request<Body> {
 fn chunk_request(uri: &str, token: &str, bytes: Vec<u8>) -> Request<Body> {
     Request::builder()
         .method("PUT")
-        .uri(uri)
+        .uri(format!("{API_VERSION_PREFIX}{uri}"))
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
         .header(header::CONTENT_TYPE, "application/octet-stream")
         .body(Body::from(Bytes::from(bytes)))
@@ -165,7 +165,7 @@ mod open_endpoint {
 
         let req = Request::builder()
             .method("POST")
-            .uri("/uploads")
+            .uri(format!("{API_VERSION_PREFIX}/uploads"))
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(
                 serde_json::json!({"file_name":"x.bin","declared_size":10,"chunk_size":10})
@@ -409,7 +409,7 @@ mod put_chunk_errors {
 
         let req = Request::builder()
             .method("PUT")
-            .uri(format!("/uploads/{session_id}/chunks/0"))
+            .uri(format!("{API_VERSION_PREFIX}/uploads/{session_id}/chunks/0"))
             .header(header::AUTHORIZATION, format!("Bearer {token}"))
             .header(header::CONTENT_TYPE, "application/octet-stream")
             .body(Body::empty())
