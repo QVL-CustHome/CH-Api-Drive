@@ -79,13 +79,19 @@ async fn toutes_les_routes_publiques_sont_montees_sous_v1() {
 }
 
 #[tokio::test]
-async fn chaque_route_publique_se_comporte_pareil_en_v1_et_en_legacy() {
+async fn route_publique_absente_sans_prefixe_v1() {
     for route in PUBLIC_ROUTES {
         let versioned = status("GET", &format!("{API_VERSION_PREFIX}{route}")).await;
         let legacy = status("GET", route).await;
         assert_eq!(
-            versioned, legacy,
-            "la transition double-exposition doit donner le meme statut pour {route}"
+            legacy,
+            StatusCode::NOT_FOUND,
+            "la route publique {route} ne doit plus etre exposee a la racine"
+        );
+        assert_ne!(
+            versioned,
+            StatusCode::NOT_FOUND,
+            "la route publique {route} doit rester accessible sous /v1"
         );
     }
 }

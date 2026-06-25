@@ -62,9 +62,9 @@ async fn route_publique_exposee_sous_v1() {
 }
 
 #[tokio::test]
-async fn route_publique_legacy_sans_prefixe_toujours_disponible() {
+async fn route_publique_legacy_sans_prefixe_non_disponible() {
     let status = status_get("/me/storage").await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]

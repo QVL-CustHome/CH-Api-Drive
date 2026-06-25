@@ -132,7 +132,7 @@ async fn insert_file_node(
 async fn download_request(app: &TestApp, owner: &str, id: Uuid, range: Option<&str>) -> axum::response::Response {
     let router = routes::router(app.state.clone());
     let mut builder = Request::builder()
-        .uri(format!("/files/{id}/content"))
+        .uri(format!("{}/files/{id}/content", routes::API_VERSION_PREFIX))
         .header(header::AUTHORIZATION, format!("Bearer {}", token_for(owner)));
     if let Some(spec) = range {
         builder = builder.header(header::RANGE, spec);
