@@ -6,12 +6,12 @@ use crate::repository::nodes::{self, NodeDto};
 use crate::repository::upload_sessions::{self, NewUploadSession, UploadSession, UploadState};
 use crate::services::storage::FsStorage;
 use crate::state::AppState;
-use axum::Json;
 use axum::body::Bytes;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use axum::Json;
 use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -225,6 +225,47 @@ async fn active_session(
     Ok(session)
 }
 
+async fn completable_session(
+    state: &AppState,
+    owner: &str,
+    session_id: Uuid,
+) -> Result<UploadSession, AppError> {
+    let session = upload_sessions::get(&state.db, owner, session_id)
+        .await?
+        .ok_or(AppError::NotFound("Session d'upload introuvable."))?;
+    match session.state {
+        UploadState::Open if session.expires_at <= Utc::now() => {
+            Err(AppError::Conflict("La session d'upload a expiré."))
+        }
+        UploadState::Open | UploadState::Completing => Ok(session),
+        UploadState::Completed => Err(AppError::Conflict(
+            "La session d'upload est déjà finalisée.",
+        )),
+        UploadState::Aborted => Err(AppError::Conflict("La session d'upload a été annulée.")),
+    }
+}
+
+async fn claim_for_completion(
+    state: &AppState,
+    owner: &str,
+    session: &UploadSession,
+) -> Result<UploadSession, AppError> {
+    if session.state == UploadState::Completing {
+        return Ok(session.clone());
+    }
+    upload_sessions::transition_state(
+        &state.db,
+        owner,
+        session.id,
+        UploadState::Open,
+        UploadState::Completing,
+    )
+    .await?
+    .ok_or(AppError::Conflict(
+        "La session d'upload n'est plus ouverte.",
+    ))
+}
+
 fn chunk_offset(session: &UploadSession, chunk_index: i32) -> u64 {
     chunk_index as u64 * session.chunk_size as u64
 }
@@ -271,9 +312,10 @@ pub async fn put_chunk(
         .await?;
 
     let delta = incoming - previous;
-    let received_bytes = upload_sessions::add_received_bytes(&state.db, user.id(), session_id, delta)
-        .await?
-        .ok_or(AppError::NotFound("Session d'upload introuvable."))?;
+    let received_bytes =
+        upload_sessions::add_received_bytes(&state.db, user.id(), session_id, delta)
+            .await?
+            .ok_or(AppError::NotFound("Session d'upload introuvable."))?;
 
     Ok(Json(PutChunkResponse {
         session_id,
@@ -299,7 +341,7 @@ pub async fn complete(
     user: DriveUser,
     Path(session_id): Path<Uuid>,
 ) -> Result<Response, AppError> {
-    let session = active_session(&state, user.id(), session_id).await?;
+    let session = completable_session(&state, user.id(), session_id).await?;
 
     if session.received_bytes != session.declared_size {
         return Err(AppError::Conflict(
@@ -313,15 +355,7 @@ pub async fn complete(
         ));
     }
 
-    let claimed = upload_sessions::transition_state(
-        &state.db,
-        user.id(),
-        session_id,
-        UploadState::Open,
-        UploadState::Completing,
-    )
-    .await?
-    .ok_or(AppError::Conflict("La session d'upload n'est plus ouverte."))?;
+    let claimed = claim_for_completion(&state, user.id(), &session).await?;
 
     match materialize(&state, user.id(), &claimed).await {
         Ok(node) => {
@@ -355,12 +389,28 @@ async fn materialize(
     owner: &str,
     session: &UploadSession,
 ) -> Result<NodeDto, AppError> {
+    if let Some(node) = existing_node(state, owner, session).await? {
+        return Ok(node);
+    }
     state
         .storage
         .finalize(&session.tmp_key, &session.storage_key)
         .await
         .map_err(|_| AppError::Internal)?;
     persist_node(state, owner, session).await
+}
+
+async fn existing_node(
+    state: &AppState,
+    owner: &str,
+    session: &UploadSession,
+) -> Result<Option<NodeDto>, AppError> {
+    let Some(node_id) = session.node_id else {
+        return Ok(None);
+    };
+    Ok(nodes::get(&state.db, owner, node_id)
+        .await?
+        .map(|node| node.to_dto()))
 }
 
 async fn persist_node(
@@ -396,6 +446,7 @@ async fn persist_node(
     drive_users::add_used_bytes(&mut tx, owner, session.declared_size)
         .await
         .map_err(AppError::from_db)?;
+    upload_sessions::set_node_tx(&mut tx, owner, session.id, node.id).await?;
     tx.commit().await.map_err(AppError::from_db)?;
 
     Ok(node.to_dto())

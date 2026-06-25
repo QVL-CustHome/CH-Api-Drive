@@ -69,7 +69,7 @@ impl<'q> sqlx::Encode<'q, Postgres> for UploadState {
     }
 }
 
-#[derive(Debug, sqlx::FromRow)]
+#[derive(Debug, Clone, sqlx::FromRow)]
 pub struct UploadSession {
     pub id: Uuid,
     pub owner_id: String,
@@ -214,12 +214,24 @@ pub async fn transition_state(
         .map_err(AppError::from_db)
 }
 
-pub async fn set_node(
-    pool: &Db,
+pub async fn set_node_tx(
+    tx: &mut sqlx::Transaction<'_, Postgres>,
     owner_id: &str,
     id: Uuid,
     node_id: Uuid,
 ) -> Result<Option<UploadSession>, AppError> {
+    update_node(&mut **tx, owner_id, id, node_id).await
+}
+
+async fn update_node<'e, E>(
+    executor: E,
+    owner_id: &str,
+    id: Uuid,
+    node_id: Uuid,
+) -> Result<Option<UploadSession>, AppError>
+where
+    E: sqlx::Executor<'e, Database = Postgres>,
+{
     let sql = format!(
         "UPDATE upload_sessions SET node_id = $3, updated_at = now() \
          WHERE id = $1 AND owner_id = $2 RETURNING {SESSION_COLS}"
@@ -228,7 +240,7 @@ pub async fn set_node(
         .bind(id)
         .bind(owner_id)
         .bind(node_id)
-        .fetch_optional(pool)
+        .fetch_optional(executor)
         .await
         .map_err(AppError::from_db)
 }
