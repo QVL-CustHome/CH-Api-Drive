@@ -122,6 +122,7 @@ impl FsStorage {
             Err(e) if is_cross_device(&e) => {
                 finalize_across_devices(&source, &destination).await
             }
+            Err(e) if e.kind() == ErrorKind::NotFound && destination.exists() => Ok(()),
             Err(e) => Err(e),
         }
     }

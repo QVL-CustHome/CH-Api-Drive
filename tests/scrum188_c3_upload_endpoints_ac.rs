@@ -831,12 +831,62 @@ mod concurrent_reservation {
     }
 }
 
+mod replay_idempotency {
+    use super::*;
+
+    #[tokio::test]
+    async fn complete_rejoue_apres_succes_ne_renvoie_jamais_500() {
+        let db = require_db!();
+        let app = TestApp::build(db.pool.clone());
+        let owner = "0123456789abcdef00188700";
+        seed_drive_user(&db.pool, owner, 1_000_000).await;
+        let token = app.token(owner);
+
+        let (_, opened) = open_session(&app, &token, 10, 10, "rejeu.bin").await;
+        let session_id = opened["session_id"].as_str().unwrap().to_string();
+
+        app.send(chunk_request(
+            &format!("/uploads/{session_id}/chunks/0"),
+            &token,
+            b"0123456789".to_vec(),
+        ))
+        .await;
+
+        let (first_status, _) = app
+            .send(bare_request(
+                "POST",
+                &format!("/uploads/{session_id}/complete"),
+                &token,
+            ))
+            .await;
+        assert_eq!(first_status, StatusCode::CREATED);
+
+        let (second_status, _) = app
+            .send(bare_request(
+                "POST",
+                &format!("/uploads/{session_id}/complete"),
+                &token,
+            ))
+            .await;
+        assert_ne!(second_status, StatusCode::INTERNAL_SERVER_ERROR);
+
+        let (status, completed) = app
+            .send(bare_request("GET", &format!("/uploads/{session_id}"), &token))
+            .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(completed["state"], "completed");
+
+        app.cleanup();
+        db.destroy().await;
+    }
+}
+
 mod degraded_persist_node_failure {
     use super::*;
 
     #[tokio::test]
-    async fn complete_qui_echoue_en_persistance_repasse_open_puis_second_complete_renvoie_internal()
-    {
+    async fn complete_qui_echoue_en_persistance_repasse_open_puis_second_complete_materialise_le_node(
+    ) {
         let db = require_db!();
         let app = TestApp::build(db.pool.clone());
         let owner = "0123456789abcdef00188500";
@@ -883,15 +933,23 @@ mod degraded_persist_node_failure {
             .await
             .unwrap();
 
-        let (second_status, second_body) = app
+        let (second_status, node) = app
             .send(bare_request(
                 "POST",
                 &format!("/uploads/{session_id}/complete"),
                 &token,
             ))
             .await;
-        assert_eq!(second_status, StatusCode::INTERNAL_SERVER_ERROR);
-        assert_eq!(second_body["error"], "internal_error");
+        assert_eq!(second_status, StatusCode::CREATED);
+        assert_eq!(node["name"], "degrade.bin");
+        assert_eq!(node["size_bytes"], 20);
+        assert_eq!(node["kind"], "file");
+
+        let (status, completed) = app
+            .send(bare_request("GET", &format!("/uploads/{session_id}"), &token))
+            .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(completed["state"], "completed");
 
         app.cleanup();
         db.destroy().await;
