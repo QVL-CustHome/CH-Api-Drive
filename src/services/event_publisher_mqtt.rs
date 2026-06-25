@@ -11,6 +11,8 @@ const FILE_PLACEHOLDER: &str = "{file_id}";
 const CLIENT_CHANNEL_CAPACITY: usize = 64;
 const KEEP_ALIVE: Duration = Duration::from_secs(30);
 const DEFAULT_PORT: u16 = 1883;
+const PLAINTEXT_SCHEMES: [&str; 2] = ["mqtt", "tcp"];
+const ENCRYPTED_SCHEMES: [&str; 3] = ["mqtts", "ssl", "tls"];
 
 #[derive(Debug, Clone)]
 pub struct MqttEventPublisherConfig {
@@ -97,9 +99,25 @@ impl MqttEventPublisher {
     }
 }
 
+fn ensure_plaintext_scheme(scheme: &str) -> Result<(), PublishError> {
+    if PLAINTEXT_SCHEMES.contains(&scheme) {
+        return Ok(());
+    }
+    let supported = PLAINTEXT_SCHEMES.join("', '");
+    if ENCRYPTED_SCHEMES.contains(&scheme) {
+        return Err(PublishError::Connection(format!(
+            "transport chiffré '{scheme}' non supporté : la topologie est mono-hôte loopback en clair, utilisez l'un des schemes '{supported}'"
+        )));
+    }
+    Err(PublishError::Connection(format!(
+        "scheme d'URL du broker non supporté : '{scheme}', attendu l'un de '{supported}'"
+    )))
+}
+
 fn build_mqtt_options(config: &MqttEventPublisherConfig) -> Result<MqttOptions, PublishError> {
     let url = Url::parse(&config.broker_url)
         .map_err(|e| PublishError::Connection(e.to_string()))?;
+    ensure_plaintext_scheme(url.scheme())?;
     let host = url
         .host_str()
         .ok_or_else(|| PublishError::Connection("hôte du broker absent".to_string()))?
